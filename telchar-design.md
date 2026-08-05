@@ -1,6 +1,6 @@
 # Telchar Design Brief
 
-**Status:** Draft
+**Status:** Reviewed design baseline; implementation not started
 
 Telchar is a self-hosted Nix build gateway. It accepts ordinary Nix remote-build requests over SSH, applies admission control and scheduling, and dispatches each derivation to a compatible execution backend.
 
@@ -40,6 +40,94 @@ Telchar decomposes the system into small responsibilities:
 - A backend executes one derivation and reports its result.
 - External infrastructure manages machine provisioning and autoscaling.
 - An optional binary cache accelerates transfers and shares completed outputs, but is not required for correctness.
+
+## Reviewed design constraints
+
+The design review established the following initial constraints. These are implementation boundaries, not aspirations.
+
+### Initial deployment and trust boundary
+
+The first release is single-active: one Telchar daemon owns scheduling, durable state, gateway-store coordination, and backend reconciliation. High availability requires a separate design because it changes protocol-session routing, scheduler leadership, dispatch fencing, and store topology.
+
+All authenticated clients in the first release belong to one mutually trusted store domain. They may be able to query or download any path present in the shared gateway store when they know its store path. Path opacity is not an authorization boundary. Hostile client multi-tenancy, per-tenant stores, and per-path client authorization are deferred.
+
+Build payloads are untrusted and must be sandboxed. Executor hosts and their Nix daemons are trusted for build-result integrity. Telchar verifies transport and Nix-store invariants, expected outputs, NAR metadata, references, and content-addressed hashes where applicable; it cannot prove that a classic input-addressed output was honestly produced. Reproducible rebuild or consensus verification is outside the initial scope.
+
+### Process topology
+
+The initial topology uses OpenSSH as the network-facing SSH implementation. A restricted forced command starts one `telchar serve-stdio` frontend per connection. The frontend owns only the protocol stream and an attachment to a build request; it communicates over authenticated local IPC with the single Telchar daemon.
+
+The daemon owns:
+
+- Shared admission and scheduler state.
+- Durable request and execution-attempt records.
+- Gateway-store leases and operations.
+- Backend submission and reconciliation.
+- Administrative state and metrics.
+
+The frontend must not create an independent scheduler or open the SQLite database directly. Trusted SSH authentication metadata must come from OpenSSH-controlled data, not client-supplied environment variables. The exact OpenSSH identity handoff, including public keys and certificates, is a prototype gate. If OpenSSH cannot provide the required authenticated metadata, ingress design must be revisited before identity or quota work begins.
+
+### Compatibility boundary
+
+The first compatibility target is exactly the stock Nix version pinned by Telchar's Nix flake. Lix and additional Nix versions are added only after real-client compatibility tests pass. Telchar will maintain an explicit matrix covering client version, worker-protocol version, trust mode, required operations, content-addressed behavior, and support status.
+
+Stock remote-building traffic is not guaranteed to use only `BuildDerivation`. Depending on client version, trust negotiation, and derivation type, Nix may use operations such as `BuildPathsWithResults`. The protocol spike must capture the actual operation sequence and define an allowlist for the supported compatibility target. Recognized but unsupported operations must fail deterministically with a Nix-compatible error.
+
+### Client scheduling contract
+
+Telchar schedules only work submitted by client Nix daemons. It cannot observe derivations retained in a client's ready queue. The builder entry's `maxJobs` is ingress credit controlling how much work a client may submit concurrently; it is not Telchar backend capacity.
+
+Each deployment must publish a deliberate capability envelope of systems and supported features. Client builder configuration must match that envelope. Unsupported capability combinations fail promptly rather than waiting forever. Queue and autoscaling metrics represent admitted, submitted demand, not all work potentially ready on client machines.
+
+### Store ownership and retention
+
+The first deployment uses a dedicated gateway host or VM whose system Nix store is controlled by Telchar and not shared with unrelated host workloads. Alternate store roots remain a prototype topic until real Nix behavior proves them necessary and supportable.
+
+Every accepted build holds durable GC roots or equivalent leases for its derivation and complete required input closure. Imported outputs remain retained until result-delivery and detachment policy permit release. Asynchronous publication jobs hold independent output leases. Lease release and terminal state changes must be coordinated so garbage collection cannot invalidate queued, running, collecting, deliverable, or publishing work.
+
+### Request and execution invariants
+
+Protocol sessions, build requests, request attachments, execution attempts, and terminal outcomes are distinct records.
+
+- One accepted build operation maps to one build request.
+- A request may have multiple attachments and bounded sequential attempts.
+- Each attempt receives a durable ID and backend idempotency key before submission.
+- Backend object names derive from the attempt ID where possible.
+- Only one unfenced active attempt may exist for a request.
+- Retry creates a linked attempt; it never mutates terminal attempt history.
+- Terminal states are immutable.
+- Recovery reconciles ambiguous submission before any resubmission.
+- Dispatching, backend-pending, running, and collecting have explicit independent limits.
+
+The initial retry policy is conservative: no automatic retry unless the failure point is classified as infrastructure-related, the previous attempt is known inactive or fenced, and the retry is explicitly allowed by a tested transition table. For Nomad, Telchar owns retry policy; Nomad restart and reschedule behavior must be configured to avoid untracked duplicate execution.
+
+### Two-layer admission
+
+Admission has two boundaries:
+
+1. Session and transfer admission limits connections, protocol frame and string sizes, NAR bytes, object counts, transfer rates, disk reserve, retained bytes, and log buffering before or during store operations.
+2. Build admission applies global and per-quota-subject queued, dispatching, pending, and running limits when a build operation arrives.
+
+Minimum global transfer bounds are part of the local vertical slice. Identity-specific quotas and fair scheduling follow trusted identity propagation and durable state.
+
+### Identity model
+
+Authentication credential, audit attribution, and quota ownership are separate concepts:
+
+```text
+Requester
+├── credential ID
+├── audit subject
+├── quota subject
+├── certificate issuer and principals, when present
+└── source address metadata
+```
+
+A credential ID is scoped by its authentication authority. An audit subject is the configured owner or CA-scoped certificate identity. A quota subject is an explicit configured mapping and falls back to credential ID. A bare source IP is audit context and emergency classification only.
+
+### Imported-code provenance
+
+No `rio-nix` source may be copied until its applicable license is resolved. The archived repository's root license and Rust package metadata appear inconsistent. Before import, Telchar must record an exact upstream revision, applicable license evidence, imported-file manifest, retained notices, local modification policy, and associated tests or fuzz targets. If the license cannot be established with sufficient confidence, Telchar must not import the code.
 
 ## Goals
 
@@ -167,28 +255,30 @@ ForceCommand telchar serve-stdio
 
 From the client's perspective, Telchar behaves as a remote Nix store and builder. Internally, Telchar can queue and dispatch the requested build elsewhere.
 
-Worker-protocol compatibility is one of the highest-risk parts of the project. Telchar will selectively import the BSD-3-Clause-licensed `rio-nix` code from the archived rio-build repository where it fits, preserving its copyright, license, and source attribution. The imported code will be maintained inside the Telchar repository rather than consumed as a live dependency. Telchar should extend or replace individual pieces only when its requirements or compatibility tests justify doing so; it should not casually reimplement protocol framing, NAR streaming, version differences, and structured error handling from scratch.
+Worker-protocol compatibility is one of the highest-risk parts of the project. Telchar may selectively import `rio-nix` code only where compatibility tests justify it and licensing evidence establishes applicable terms with sufficient confidence. Any imported code will preserve required copyright, license, and source attribution and will be maintained inside the Telchar repository rather than consumed as a live dependency. If import is not permitted, Telchar will implement the required behavior from protocol evidence and primary references without copying upstream source. Individual pieces should be extended or replaced only when requirements or compatibility tests justify doing so; protocol framing, NAR streaming, version differences, and structured error handling must not be casually reimplemented from assumptions.
 
 ## Core architectural principle
 
-A submitted derivation is the unit of scheduling and execution.
+An accepted derivation build operation is the unit of scheduling. An execution attempt is the unit of backend dispatch.
 
 In standard remote-builder mode, the local Nix daemon traverses the dependency graph and submits derivations when their dependencies are available. Telchar can therefore begin without implementing a full DAG evaluator or planner.
 
 The initial model is:
 
 ```text
-one BuildDerivation request
+one accepted build operation
         │
         ▼
-one Telchar queued build
+one Telchar build request
         │
         ▼
-one selected backend execution
+one or more bounded sequential attempts
         │
         ▼
-one structured build result
+one immutable terminal outcome
 ```
+
+The initial compatibility target may use `BuildDerivation`, `BuildPathsWithResults`, or both according to captured behavior from the pinned stock Nix client. The scheduling model must not depend on only one worker operation code.
 
 A backend may use a persistent worker or create a one-shot allocation, but that difference remains behind the backend interface.
 
@@ -259,6 +349,8 @@ It should enforce bounded limits such as:
 
 A rejected request must receive a clear Nix-compatible error. It must not be silently dropped.
 
+Build admission does not protect uploads that occur before the build operation. The gateway must separately enforce bounded connections, protocol allocations, NAR sizes, retained bytes, transfer rates, disk reserve, and bounded log buffering.
+
 ### Scheduler
 
 The scheduler owns:
@@ -300,7 +392,7 @@ Telchar needs durable or reconstructable state for:
 - Output paths.
 - Audit metadata.
 
-A first implementation may use SQLite if one active Telchar instance is an explicit constraint. PostgreSQL is appropriate when high availability or multiple gateway replicas become requirements. Storage choice should follow actual deployment requirements rather than being abstracted prematurely.
+The first implementation uses SQLite under an explicit single-active Telchar constraint. Database migrations are repository-controlled. Dispatch state changes and attempt creation must be transactional, and restart recovery must reconcile ambiguous backend submission before resubmitting work. PostgreSQL and multiple active gateways require a separate high-availability design and are not organizational hardening tasks.
 
 ### Backend interface
 
@@ -442,13 +534,13 @@ A backend may first substitute paths from its normal configured caches, then obt
 
 After execution:
 
-1. The executor reports expected outputs.
-2. Telchar imports them into its store.
-3. Telchar verifies the result and expected path metadata.
+1. The executor reports expected outputs and Nix result metadata.
+2. Telchar imports outputs into its real Nix store.
+3. Telchar validates NAR and path metadata, references, expected output names and paths, content-addressed hashes and realisations where applicable, and the supported `BuildResult` fields.
 4. Telchar returns a successful build result to the client.
 5. Optional cache publication occurs according to policy.
 
-Telchar must not report success merely because a backend process exited successfully. Required outputs must be present and valid at the gateway boundary.
+Telchar must not report success merely because a backend process exited successfully. Required outputs must be present and valid at the gateway boundary. For classic input-addressed derivations, this validates store consistency but does not cryptographically prove provenance; executor integrity remains trusted.
 
 ## Optional binary-cache integration
 
@@ -517,14 +609,14 @@ Inputs may contain:
 - Sensitive names or content.
 - Material intended only for one build.
 
-A safe default is:
+A safe publication default is:
 
 ```text
-client-uploaded inputs: private to Telchar and selected executor
-successful outputs: optionally publish according to explicit policy
+client-uploaded inputs: never publish automatically
+successful outputs: publish only according to explicit policy
 ```
 
-Even outputs may contain proprietary material, so publication policy must remain configurable.
+The initial shared-store trust domain does not promise confidentiality between authenticated clients. Selected executors receive only the closure required for their request, but all executor hosts remain trusted infrastructure. Even outputs may contain proprietary material, so publication policy must remain configurable.
 
 ### Cache implementation boundary
 
@@ -544,24 +636,19 @@ Source IP is unstable or shared when users are behind:
 - IPv6 privacy addressing.
 - SSH bastions or proxies.
 
-The preferred identity hierarchy is:
-
-1. SSH public-key fingerprint.
-2. OpenSSH certificate key ID and principals, when present.
-3. Source IP as audit metadata and fallback classification.
-
-A normalized requester record may contain:
+The normalized identity model separates credential, audit, and policy ownership:
 
 ```text
 Requester
-├── stable key fingerprint
-├── certificate key ID
-├── certificate principals
-├── source IP
+├── credential ID scoped by authentication authority
+├── configured or CA-scoped audit subject
+├── explicit quota subject, falling back to credential ID
+├── certificate key ID and principals, when present
+├── source IP audit metadata
 └── configured group or policy mapping
 ```
 
-At work, each engineer or device should receive an individual key or certificate. A shared SSH principal can identify the service authorization while certificate key IDs and key fingerprints retain attribution.
+A key fingerprint identifies a credential or device, not necessarily a person. Multiple keys must not silently bypass an intended person or team quota; deployments needing that behavior must configure their keys and certificates to one quota subject. At work, each engineer or device should receive an individual credential while configured mappings retain stable attribution and quota ownership.
 
 Initial quotas should remain simple:
 
@@ -730,7 +817,9 @@ Existing allocations finish
 Infrastructure removes node
 ```
 
-One derivation per batch allocation gives the infrastructure scheduler a concrete unit to place, observe, drain, and terminate. Telchar should expose queue and execution metrics but must not embed provider-specific scaling policy.
+One derivation per batch allocation gives the infrastructure scheduler a concrete unit to place, observe, drain, and terminate. Drain deadlines must be configured so ordinary scale-down does not terminate accepted work. Telchar should expose queue and execution metrics but must not embed provider-specific scaling policy.
+
+Nomad job restart and reschedule policies must be explicit. Telchar remains the owner of retry accounting and must reconcile every allocation belonging to an attempt before deciding that another attempt is safe.
 
 ## Observability
 
@@ -875,16 +964,20 @@ This is a direction, not a required crate split. Begin as one crate unless compi
 
 ## Delivery phases
 
-### Phase 0: protocol spike
+### Phase 0: reproducible baseline and protocol spike
 
-Goal: prove a stock Nix client can communicate with a Rust endpoint.
+Goal: prove the pinned stock Nix client can communicate with Telchar and establish the compatibility boundary.
 
-- Start restricted SSH endpoint or invoke stdio server directly in tests.
-- Complete Nix worker-protocol handshake.
-- Exercise protocol against real Nix.
-- Identify the minimum required operation set for remote-builder mode.
-- Extract the useful `rio-nix` protocol code into the Telchar repository with BSD-3-Clause attribution.
-- Remove unrelated functionality and identify any protocol gaps through compatibility tests.
+- Pin Rust, Nix, and NixOS test inputs in a flake.
+- Establish pristine format, lint, unit-test, and real-Nix integration commands.
+- Record the initial compatibility matrix.
+- Capture the operation sequence used by real remote builds in relevant trust modes.
+- Complete Nix worker-protocol handshake over direct stdio.
+- Define required, optional, and deterministically rejected operations.
+- Resolve `rio-nix` licensing and record source provenance before importing any code.
+- Import only behavior justified by compatibility tests, preserving applicable attribution and useful tests or fuzz targets.
+- Prove the same supported session over restricted OpenSSH `ssh-ng://` ingress.
+- Prove trusted identity handoff and negative SSH restrictions.
 
 No scheduler, Nomad, quotas, or cache publication yet.
 
@@ -906,16 +999,31 @@ Success criterion:
 stock Nix client -> Telchar -> local backend -> output returned
 ```
 
-### Phase 2: admission and durable execution state
+### Phase 2: durable request and attempt state
 
-- Stable requester identity.
-- Global and per-identity limits.
-- Fair queue.
-- Durable request records.
+- Single-active daemon with SQLite migrations.
+- Explicit request, attachment, attempt, and outcome states.
+- Transactional dispatch and backend idempotency keys.
+- Restart recovery and ambiguous-submission reconciliation.
+- Gateway-store leases and safe retention cleanup.
+
+### Phase 3: identity, admission, scheduling, and administration
+
+- Trusted requester identity propagation.
+- Global transfer bounds and per-quota-subject retained-byte limits.
+- Global and per-quota-subject build limits.
+- Deterministic fair queue with stable tie-breaking.
 - Administrative status and cancellation.
-- Structured metrics.
+- Structured metrics and audit records.
 
-### Phase 3: static SSH backend
+### Phase 4: remote execution contract
+
+- Request-scoped input and output authorization.
+- Backend idempotency, reconciliation, logs, cancellation, and collection semantics.
+- Faithful supported `BuildResult` mapping.
+- Reusable backend conformance tests.
+
+### Phase 5: static SSH backend
 
 - Capability configuration.
 - Input staging.
@@ -924,7 +1032,7 @@ stock Nix client -> Telchar -> local backend -> output returned
 - Infrastructure/build failure distinction.
 - End-to-end test with a real SSH builder VM.
 
-### Phase 4: Nomad batch backend
+### Phase 6: Nomad batch backend
 
 - One batch job per derivation.
 - System and feature constraints.
@@ -934,7 +1042,7 @@ stock Nix client -> Telchar -> local backend -> output returned
 - Cancellation.
 - End-to-end test against a local Nomad development cluster or isolated test environment.
 
-### Phase 5: optional cache integration
+### Phase 7: optional cache integration
 
 - Read-through substituters.
 - Executor substitution.
@@ -942,13 +1050,13 @@ stock Nix client -> Telchar -> local backend -> output returned
 - Asynchronous output publication.
 - Cache outage tests proving builds remain functional.
 
-### Phase 6: organizational hardening
+### Phase 8: organizational hardening
 
 - Group policy.
 - Priority classes.
 - Stronger isolation guidance.
 - Audit exports.
-- High-availability state if required.
+- A separately reviewed high-availability architecture if required.
 - Duplicate request coalescing if justified.
 - Broader compatibility and load testing.
 
@@ -1023,7 +1131,7 @@ Rio-build is Kubernetes-native and includes a sophisticated DAG scheduler, chunk
 - Pluggable backends rather than a Kubernetes-only executor controller.
 - External infrastructure autoscaling.
 
-Rio-build is archived and has limited adoption, so Telchar will not depend on it as an active upstream project. Its `rio-nix` crate is deliberately isolated from other `rio-*` crates and includes worker-protocol, ATerm, NAR, store-path, build-result, and structured-error parsing plus fuzz targets. Telchar will selectively import useful `rio-nix` code into its own repository under rio-build's BSD 3-Clause license, preserve the required copyright and license notices, record the source revision, and maintain the resulting code directly. Reimplementation remains appropriate for pieces that do not fit Telchar, but duplicating already-tested binary protocol machinery provides no benefit.
+Rio-build is archived, so Telchar will not depend on it as an active upstream project. Its `rio-nix` crate is deliberately isolated from other `rio-*` crates and includes worker-protocol, ATerm, NAR, store-path, build-result, and structured-error parsing plus fuzz targets. The repository's root license and Rust package metadata appear inconsistent. Telchar may import useful code only after recording the source revision and resolving applicable license evidence, notices, and local maintenance requirements. Otherwise, rio-build remains architectural reference material only and required behavior will be implemented independently from protocol evidence and primary references.
 
 ### Yensid
 
@@ -1054,24 +1162,22 @@ Its Buildbot, Tailscale, and HAProxy integration is not Telchar's architecture, 
 
 Hydra and `hydra-provisioner` demonstrate queue-driven build-machine provisioning by system and required features. Telchar does not adopt Hydra's CI/jobset model, but retains the lesson that scaling signals should come from queued build demand rather than raw proxy connection counts.
 
-## Open questions
+## Open questions and prototype gates
 
-The following require prototypes or explicit project decisions:
+The following remain bounded research tasks. Each must produce recorded evidence or an architecture decision before dependent implementation begins:
 
-1. Which portions of the imported `rio-nix` code fit Telchar unchanged, and which require replacement?
-2. What is the minimum operation set required across supported Nix versions?
-3. Should the first SSH endpoint use an embedded Rust SSH server or OpenSSH with a forced command?
-4. Should the first gateway use the system Nix store or an isolated store root?
-5. How should executors obtain request-scoped access to private input paths?
-6. What backend result format preserves all required Nix `BuildResult` semantics?
-7. Which failures are provably safe to retry?
-8. How should log streaming resume after gateway or backend reconnects?
-9. What Nix and Lix version range will the project support initially?
-10. When does SQLite cease to be sufficient for durable state?
-11. What is the minimum safe isolation contract for a shared Nomad executor pool?
-12. Should cache publication use `nix copy`, an Attic CLI, or a native API first?
+1. Which exact worker operations and protocol versions are exercised by the flake-pinned Nix client in trusted, untrusted, classic input-addressed, and content-addressed cases?
+2. Can OpenSSH expose sufficient authenticated public-key and certificate metadata to the forced-command frontend without trusting client-controlled environment data?
+3. Which `rio-nix` files, if any, have licensing evidence sufficient for import, and which imported tests or fuzz targets establish their value?
+4. Does the dedicated system-store topology satisfy protocol, privilege, fixture-reset, and GC-lease requirements, or is an alternate store root necessary?
+5. What request-scoped transfer and authorization protocol lets remote executors obtain exactly the required private closure and return only authorized outputs?
+6. What normalized result schema preserves every `BuildResult` field required by the initial compatibility matrix?
+7. Which precise failure transitions permit bounded retry after proving the previous attempt inactive or fenced?
+8. What bounded log transport and retention policy handles slow clients, disconnects, and backend reconnects? First-release client reattachment may be explicitly unsupported.
+9. What minimum Nomad task-driver, sandbox, filesystem, network, resource, secret, cleanup, drain, restart, and reschedule contract is safe enough to support?
+10. Should cache publication first use `nix copy`, an Attic CLI, or a native API?
 
-These are design questions, not reasons to expand the initial scope. The first vertical slice should answer the protocol and store questions before work begins on backend breadth.
+These questions do not justify speculative abstractions. Protocol, identity, store, state, and remote-transfer gates must close before backend breadth begins.
 
 ## Initial project charter
 
