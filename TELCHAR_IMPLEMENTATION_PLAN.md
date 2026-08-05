@@ -21,7 +21,7 @@ For every implementation or bug-fix task:
 
 Decision and research tasks do not invent production behavior. They must produce an ADR, compatibility record, captured trace, threat model, or test fixture. If evidence does not support a decision, mark the dependent work blocked.
 
-External boundaries use real components: real Nix, Nix stores, OpenSSH, SQLite, SSH builders, Nomad, and cache fixtures. Do not test mocks that merely replay desired behavior.
+External boundaries use real components: real Nix, Nix stores, OpenSSH, PostgreSQL, SSH builders, Nomad, and cache fixtures. Do not substitute SQLite for PostgreSQL and do not test mocked repositories that merely replay desired behavior.
 
 ## Task template
 
@@ -40,7 +40,7 @@ Evidence: paths and output facts to record
 
 - [ ] T001 Record initial supported deployment assumptions
   - Depends on: none
-  - Outcome: ADR records Linux-first, single-active daemon, OpenSSH forced-command frontend, SQLite, TOML configuration, dedicated gateway host system store, and mutually trusted authenticated client store domain.
+  - Outcome: ADR records Linux-first, single-active daemon, OpenSSH forced-command frontend, PostgreSQL, TOML configuration, dedicated gateway host system store, and mutually trusted authenticated client store domain. It states that database interchangeability is not an initial goal.
   - Red: list contradictions between ADR and `telchar-design.md`.
   - Verify: repository documentation consistency check.
   - Evidence: ADR path and resolved contradictions.
@@ -579,19 +579,19 @@ Evidence: paths and output facts to record
 
 ### Minimum durable request and lease state
 
-- [ ] T070A Add minimum SQLite migration runner
+- [ ] T070A Add minimum PostgreSQL migration runner
   - Depends on: T063
-  - Outcome: Gate 3 daemon applies ordered migrations for sessions, requests, attachments, and store leases transactionally.
-  - Red: empty database lacks minimum lifecycle schema.
-  - Verify: minimum migration integration test.
-  - Evidence: schema version and tables.
+  - Outcome: Gate 3 daemon applies ordered PostgreSQL migrations for sessions, requests, attachments, and store leases transactionally.
+  - Red: empty PostgreSQL database lacks minimum lifecycle schema.
+  - Verify: real PostgreSQL migration integration test.
+  - Evidence: PostgreSQL version, schema version, and tables.
 
 - [ ] T070B Persist minimum protocol session
   - Depends on: T070A
-  - Outcome: session ID, requester reference, and open/closed state survive process restart.
+  - Outcome: domain-specific session state operation persists session ID, requester reference, and open/closed state across process restart.
   - Red: session round-trip/restart test fails.
-  - Verify: SQLite session test.
-  - Evidence: persisted fields.
+  - Verify: real PostgreSQL session state-operation test.
+  - Evidence: persisted fields and transaction boundary.
 
 - [ ] T070C Persist minimum build request
   - Depends on: T070B
@@ -611,10 +611,10 @@ Evidence: paths and output facts to record
 
 - [ ] T071 Define store lease record
   - Depends on: T070C
-  - Outcome: durable lease identifies request/publication owner, path, purpose, and release state.
-  - Red: schema test fails.
-  - Verify: migration/schema test.
-  - Evidence: fields and constraints.
+  - Outcome: durable PostgreSQL lease identifies request/publication owner, path, purpose, and release state behind domain-specific lease operations.
+  - Red: schema and operation tests fail.
+  - Verify: real PostgreSQL migration and lease-operation tests.
+  - Evidence: fields, constraints, and transaction ownership.
 
 - [ ] T072 Acquire derivation lease on accepted build
   - Depends on: T071
@@ -806,33 +806,33 @@ Evidence: paths and output facts to record
 
 ### Durable request model
 
-- [ ] T096 Extend SQLite migrations for execution state
+- [ ] T096 Extend PostgreSQL migrations for execution state
   - Depends on: T095, T070A
-  - Outcome: ordered migrations add attempts, outcomes, queue state, capacity reservations, and audit fields transactionally.
+  - Outcome: ordered PostgreSQL migrations add attempts, outcomes, queue state, capacity reservations, and audit fields transactionally.
   - Red: Gate 3 database cannot represent execution lifecycle.
-  - Verify: upgrade migration integration test from Gate 3 schema.
-  - Evidence: old/new schema versions and preserved rows.
+  - Verify: real PostgreSQL upgrade migration test from Gate 3 schema.
+  - Evidence: PostgreSQL version, old/new schema versions, and preserved rows.
 
-- [ ] T097 Harden protocol session record
+- [ ] T097 Harden protocol session state operation
   - Depends on: T096, T070B
-  - Outcome: session adds bounded audit metadata, timestamps, and constraints without losing Gate 3 rows.
-  - Red: migration/round-trip test fails.
-  - Verify: SQLite session upgrade test.
-  - Evidence: preserved and added fields.
+  - Outcome: session state operation adds bounded audit metadata, timestamps, and constraints without exposing SQL or losing Gate 3 rows.
+  - Red: migration/operation round-trip test fails.
+  - Verify: real PostgreSQL session-operation upgrade test.
+  - Evidence: preserved and added fields plus transaction boundary.
 
-- [ ] T098 Harden build request record
+- [ ] T098 Harden build request state operation
   - Depends on: T097, T070C
-  - Outcome: request adds normalized immutable fields, queue metadata, and constraints without changing identity.
-  - Red: migration/round-trip test fails.
-  - Verify: request upgrade test.
-  - Evidence: preserved ID and added fields.
+  - Outcome: request state operation adds normalized immutable fields, queue metadata, and constraints without changing identity or exposing generic CRUD.
+  - Red: migration/operation round-trip test fails.
+  - Verify: real PostgreSQL request-operation upgrade test.
+  - Evidence: preserved ID, added fields, and transaction boundary.
 
-- [ ] T099 Harden request attachment record
+- [ ] T099 Harden request attachment state operation
   - Depends on: T098, T070D
-  - Outcome: attachment adds completed-delivery state, timestamps, and restart constraints.
-  - Red: migration/round-trip test fails.
-  - Verify: attachment upgrade test.
-  - Evidence: multiple attachment cases.
+  - Outcome: attachment state operation adds completed-delivery state, timestamps, and restart constraints.
+  - Red: migration/operation round-trip test fails.
+  - Verify: real PostgreSQL attachment-operation upgrade test.
+  - Evidence: multiple attachment cases and transaction boundary.
 
 - [ ] T100 Persist execution attempt
   - Depends on: T098
@@ -861,7 +861,7 @@ Evidence: paths and output facts to record
   - Depends on: T100, T102
   - Outcome: atomic transaction creates attempt and reserves capacity before backend submission.
   - Red: concurrent dispatch creates duplicate attempts or exceeds capacity.
-  - Verify: concurrent SQLite transition test.
+  - Verify: concurrent real PostgreSQL transition test using row locking and transactional capacity reservation.
   - Evidence: single active attempt.
 
 - [ ] T104 Transition dispatching attempt to backend-pending
@@ -1163,7 +1163,7 @@ Evidence: paths and output facts to record
   - Depends on: T098, T100, T101
   - Outcome: CLI shows request, requester, attachments, attempts, backend, state, and timing without secrets.
   - Red: CLI golden test lacks fields.
-  - Verify: CLI integration test against SQLite fixture.
+  - Verify: CLI integration test against real PostgreSQL fixture.
   - Evidence: sanitized output.
 
 - [ ] T145 Add queue listing command
@@ -1205,7 +1205,7 @@ Evidence: paths and output facts to record
   - Depends on: T114, T142, T146
   - Outcome: durable audit record links credential, audit/quota subject, source metadata, request, action, actor, and reason.
   - Red: audit completeness test fails.
-  - Verify: SQLite audit test.
+  - Verify: real PostgreSQL audit-operation test.
   - Evidence: sanitized rows.
 
 ### Gate 4 acceptance
@@ -1884,7 +1884,7 @@ Evidence: paths and output facts to record
   - Depends on: T231, T107
   - Outcome: successful build can enqueue durable publication job without changing build outcome.
   - Red: publication schema/transaction test fails.
-  - Verify: SQLite publication test.
+  - Verify: real PostgreSQL publication-operation test.
   - Evidence: request/output/policy fields.
 
 - [ ] T242 Acquire publication output lease
@@ -2049,12 +2049,12 @@ Evidence: paths and output facts to record
   - Verify: retention cleanup test.
   - Evidence: before/after sizes.
 
-- [ ] T264 Enforce database retention policy
+- [ ] T264 Enforce PostgreSQL retention policy
   - Depends on: T101, T150
-  - Outcome: old terminal operational records clean according to policy without breaking audit requirements or active references.
+  - Outcome: domain-specific cleanup operation removes old terminal operational records according to policy without breaking audit requirements, active references, or lease constraints.
   - Red: cleanup deletes active/leased data or retains expired data.
-  - Verify: SQLite retention test.
-  - Evidence: retained/deleted rows.
+  - Verify: real PostgreSQL retention-operation test.
+  - Evidence: retained/deleted rows and transaction boundary.
 
 - [ ] T265 Run dependency license audit
   - Depends on: T250
@@ -2132,17 +2132,17 @@ Evidence: paths and output facts to record
 
 - [ ] T275 Add NixOS module for single-active deployment
   - Depends on: T251, T255, T274
-  - Outcome: module configures daemon, local IPC, service user, state directory, metrics, and OpenSSH forced command without broad shell access.
+  - Outcome: module configures daemon, PostgreSQL connection/credentials, local IPC, service user, state directory, metrics, and OpenSSH forced command without broad shell access. PostgreSQL may be local or external but remains a required service.
   - Red: NixOS VM module test fails.
   - Verify: module evaluation and VM test.
   - Evidence: service and sshd assertions.
 
-- [ ] T276 Add service upgrade migration test
+- [ ] T276 Add PostgreSQL service upgrade migration test
   - Depends on: T096, T275
-  - Outcome: previous schema fixture upgrades and preserves active/terminal records.
+  - Outcome: previous PostgreSQL schema fixture upgrades and preserves active/terminal records.
   - Red: upgrade loses or corrupts data.
-  - Verify: NixOS upgrade VM test.
-  - Evidence: before/after schema and records.
+  - Verify: NixOS upgrade VM test against real PostgreSQL.
+  - Evidence: PostgreSQL versions, before/after schema, and preserved records.
 
 - [ ] T277 Document operator deployment
   - Depends on: T275
@@ -2160,9 +2160,9 @@ Evidence: paths and output facts to record
 
 - [ ] T279 Document disaster recovery
   - Depends on: T256, T276
-  - Outcome: runbook covers SQLite backup/restore, gateway-store coordination, ambiguous attempts, backend reconciliation, and publication recovery.
+  - Outcome: runbook covers PostgreSQL backup/restore, point-in-time assumptions, gateway-store coordination, ambiguous attempts, backend reconciliation, and publication recovery.
   - Red: tabletop checklist exposes missing recovery step.
-  - Verify: scripted backup/restore rehearsal.
+  - Verify: scripted PostgreSQL backup/restore rehearsal against the gateway-store fixture.
   - Evidence: restored state and reconciled work.
 
 - [ ] T280 Add release verification script
@@ -2186,7 +2186,8 @@ Evidence: paths and output facts to record
 These items require separate design review before implementation and are not hidden inside the tasks above:
 
 - Multiple active Telchar gateways or scheduler high availability.
-- PostgreSQL migration and distributed dispatch fencing.
+- Supporting a durable database other than PostgreSQL.
+- Multiple active scheduler ownership and distributed dispatch fencing.
 - Hostile client multi-tenancy or per-path client authorization.
 - Per-tenant gateway stores.
 - Reproducible-build consensus or cryptographic provenance for classic input-addressed outputs.

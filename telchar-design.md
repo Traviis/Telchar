@@ -65,7 +65,7 @@ The daemon owns:
 - Backend submission and reconciliation.
 - Administrative state and metrics.
 
-The frontend must not create an independent scheduler or open the SQLite database directly. Trusted SSH authentication metadata must come from OpenSSH-controlled data, not client-supplied environment variables. The exact OpenSSH identity handoff, including public keys and certificates, is a prototype gate. If OpenSSH cannot provide the required authenticated metadata, ingress design must be revisited before identity or quota work begins.
+The frontend must not create an independent scheduler or connect to PostgreSQL directly. Trusted SSH authentication metadata must come from OpenSSH-controlled data, not client-supplied environment variables. The exact OpenSSH identity handoff, including public keys and certificates, is a prototype gate. If OpenSSH cannot provide the required authenticated metadata, ingress design must be revisited before identity or quota work begins.
 
 ### Compatibility boundary
 
@@ -392,7 +392,13 @@ Telchar needs durable or reconstructable state for:
 - Output paths.
 - Audit metadata.
 
-The first implementation uses SQLite under an explicit single-active Telchar constraint. Database migrations are repository-controlled. Dispatch state changes and attempt creation must be transactional, and restart recovery must reconcile ambiguous backend submission before resubmitting work. PostgreSQL and multiple active gateways require a separate high-availability design and are not organizational hardening tasks.
+The first implementation uses PostgreSQL as its durable control-plane database while retaining an explicit single-active Telchar daemon constraint. PostgreSQL is an infrastructure choice, not a claim of scheduler high availability. Multiple active gateways still require a separate design for leadership, protocol-session ownership, dispatch fencing, and gateway-store coordination.
+
+Persistence is encapsulated behind domain-specific state operations such as accepting a request, attaching a session, claiming runnable work, creating an attempt, recording backend submission, transitioning execution state, completing a request, acquiring store leases, and recovering incomplete attempts. Protocol, admission, scheduler, and backend code must not issue arbitrary SQL or depend on table-shaped generic repositories.
+
+Database interchangeability is not an initial goal. Telchar should use PostgreSQL transactions, constraints, locking, and `RETURNING` semantics where they improve correctness. It must not weaken the design to a lowest-common-denominator database API or create generic CRUD abstractions that hide transaction ownership. Supporting another database requires separate design, migration, concurrency, recovery, and real integration-test work.
+
+Database migrations are repository-controlled. Critical state operations own explicit transaction boundaries. Dispatch state changes and attempt creation must be transactional, and restart recovery must reconcile ambiguous backend submission before resubmitting work. Unit tests may exercise pure scheduling and transition decisions without a database, but persistence tests must use real PostgreSQL rather than SQLite substitutes or mocked repositories.
 
 ### Backend interface
 
@@ -1001,7 +1007,8 @@ stock Nix client -> Telchar -> local backend -> output returned
 
 ### Phase 2: durable request and attempt state
 
-- Single-active daemon with SQLite migrations.
+- Single-active daemon with PostgreSQL migrations.
+- Domain-specific state operations with explicit transaction ownership.
 - Explicit request, attachment, attempt, and outcome states.
 - Transactional dispatch and backend idempotency keys.
 - Restart recovery and ambiguous-submission reconciliation.
