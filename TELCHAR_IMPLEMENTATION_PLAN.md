@@ -52,12 +52,12 @@ Evidence: paths and output facts to record
   - Verify: `nix flake metadata` and pinned `nix --version` command.
   - Evidence: locked revision and version output.
 
-- [ ] T003 Add Rust package skeleton
+- [ ] T003 Add Cargo workspace skeleton
   - Depends on: T002
-  - Outcome: one Rust crate builds a minimal `telchar` binary.
-  - Red: flake check expecting binary fails before crate exists.
-  - Verify: `nix develop -c cargo build --locked`.
-  - Evidence: binary path and clean build summary.
+  - Outcome: workspace contains `crates/nix-worker-protocol` library and `crates/telchar` binary; Telchar uses the protocol crate through a path dependency.
+  - Red: flake check expecting both workspace packages fails before they exist.
+  - Verify: `nix develop -c cargo build --workspace --locked`.
+  - Evidence: package names, dependency edge, binary path, and clean build summary.
 
 - [ ] T004 Pin Rust toolchain in development shell
   - Depends on: T003
@@ -152,33 +152,33 @@ Evidence: paths and output facts to record
   - Verify: classifier script over trace artifacts.
   - Evidence: zero unclassified operations.
 
-- [ ] T017 Pin rio-build source revision
+- [ ] T017 Record rio-build reference revision
   - Depends on: none
-  - Outcome: provenance record identifies exact archived upstream commit considered for study.
-  - Red: source record validation fails without immutable revision.
-  - Verify: provenance validation script.
+  - Outcome: reference record identifies exact archived upstream commit reviewed for architecture and test-category research.
+  - Red: reference record lacks immutable revision.
+  - Verify: reference-provenance validation script.
   - Evidence: upstream URL and full commit hash.
 
-- [ ] T018 Resolve rio-nix licensing evidence
+- [ ] T018 Record rio-nix licensing discrepancy and no-copy policy
   - Depends on: T017
-  - Outcome: ADR records applicable license evidence or prohibits source import.
-  - Red: root license and Cargo metadata discrepancy remains unresolved.
-  - Verify: independent license-file/manifests review checklist.
-  - Evidence: conclusion, sources, retained notice requirements.
+  - Outcome: ADR records conflicting license signals and establishes that initial `nix-worker-protocol` code will not copy, translate, or mechanically adapt Rio source.
+  - Red: source policy permits ambiguous copying or lacks distinction between reference and implementation evidence.
+  - Verify: independent policy review checklist.
+  - Evidence: cited license signals, no-copy rule, and future import decision requirements.
 
-- [ ] T019 Record rio-nix import path
-  - Depends on: T018
-  - Outcome: if import is permitted, add a machine-readable manifest format recording upstream path, revision, license, local path, modifications, and tests; if import is prohibited, record that all later import tasks are skipped and independent implementation is required.
-  - Red: decision record lacks an executable downstream path.
-  - Verify: provenance-path validation script.
-  - Evidence: manifest schema and sample, or explicit no-import marker.
+- [ ] T019 Define `nix-worker-protocol` crate boundary
+  - Depends on: T003, T018
+  - Outcome: ADR and dependency check allow only reusable wire primitives, negotiation, operations, messages, activity/error frames, result types, compatibility fixtures, property tests, and fuzz targets; Telchar domain dependencies are forbidden.
+  - Red: boundary test permits identity, scheduler, PostgreSQL, SSH ingress, backend, cache, or service configuration dependencies.
+  - Verify: workspace dependency-boundary test.
+  - Evidence: allowed responsibilities and forbidden dependency checks.
 
-- [ ] T020 Inventory rio-nix use or independent replacements
+- [ ] T020 Inventory independent protocol behaviors
   - Depends on: T016, T018, T019
-  - Outcome: each required behavior maps either to a licensed import candidate or to an independent implementation from protocol evidence and primary references.
-  - Red: required behavior has neither permitted source candidate nor independent implementation path.
-  - Verify: behavior inventory cross-check script.
-  - Evidence: per-behavior import/implement/defer decisions.
+  - Outcome: every required behavior maps to captured traffic, primary Nix source/documentation references, and an independent implementation/test task; Rio contributes only architecture or test-category notes.
+  - Red: required behavior depends on Rio implementation details or lacks primary evidence.
+  - Verify: protocol evidence inventory cross-check script.
+  - Evidence: per-behavior evidence sources and task mapping.
 
 ### Gate 0 acceptance
 
@@ -328,28 +328,28 @@ Evidence: paths and output facts to record
   - Verify: timeout test with bounded wall clock.
   - Evidence: duration and cleanup assertion.
 
-### Imported protocol behavior
+### Independent protocol behavior
 
-- [ ] T041 Implement first inventoried protocol behavior
+- [ ] T041 Implement first inventoried protocol behavior independently
   - Depends on: T020, T035
-  - Outcome: implement one required behavior using the permitted path from T020: licensed import with notices and tests, or independent code from protocol evidence and primary references.
+  - Outcome: implement one required behavior in `nix-worker-protocol` from captured traffic, primary Nix source/documentation, and a failing compatibility or behavior test without copying or translating Rio source.
   - Red: named compatibility or behavior test fails before implementation.
-  - Verify: behavior tests, compatibility test, and provenance validation.
-  - Evidence: implementation path, source evidence, and test result.
+  - Verify: crate behavior tests, real compatibility test, and evidence inventory validation.
+  - Evidence: primary evidence references, test result, and no-copy attestation.
 
-- [ ] T042 Adapt imported behavior only when compatibility evidence requires it
-  - Depends on: T041
-  - Outcome: when T041 used imported code and a real compatibility test fails, make the smallest justified adaptation while preserving imported tests; otherwise record this task not applicable.
-  - Red: named compatibility test fails on the permitted unmodified import.
-  - Verify: imported tests plus real compatibility test, or no-import applicability check.
-  - Evidence: reason and result, or explicit not-applicable record.
+- [ ] T042 Record Rio-informed edge-case and test inventory
+  - Depends on: T017, T018, T041
+  - Outcome: compare Rio's architecture and test categories against current crate coverage, adding missing test ideas without copying implementation or test bodies.
+  - Red: reference review identifies an untracked edge-case category.
+  - Verify: reference-to-test-category checklist.
+  - Evidence: categories adopted, deferred, or rejected with reasons.
 
-- [ ] T043 Import structured error framing behavior
+- [ ] T043 Implement structured error framing independently
   - Depends on: T020, T037
-  - Outcome: licensed import or Telchar implementation emits error/activity frames required by pinned client.
+  - Outcome: `nix-worker-protocol` emits error and activity frames required by the pinned client using captured traffic and primary Nix references without copying or translating Rio source.
   - Red: real client reports undecodable EOF/error.
-  - Verify: real-client expected-error test.
-  - Evidence: captured clean client message.
+  - Verify: crate framing tests and real-client expected-error test.
+  - Evidence: primary evidence references and captured clean client message.
 
 - [ ] T044 Bound structured log and error frame sizes
   - Depends on: T043
@@ -361,7 +361,7 @@ Evidence: paths and output facts to record
 ### Gate 1 acceptance
 
 - [ ] T045 Verify Gate 1 stdio protocol proof
-  - Depends on: T030, T035, T038, T039, T040, T043, T044
+  - Depends on: T030, T035, T038, T039, T040, T041, T042, T043, T044
   - Outcome: real pinned Nix negotiates over stdio; malformed, oversized, unsupported, and unknown inputs fail cleanly.
   - Red: gate script reports missing evidence.
   - Verify: protocol unit/property/fuzz-smoke and real-client stdio suite.
@@ -2056,11 +2056,11 @@ Evidence: paths and output facts to record
   - Verify: real PostgreSQL retention-operation test.
   - Evidence: retained/deleted rows and transaction boundary.
 
-- [ ] T265 Run dependency license audit
+- [ ] T265 Run dependency and source-provenance audit
   - Depends on: T250
-  - Outcome: repository records allowed licenses and imported-source notices.
-  - Red: audit reports unknown/disallowed package or missing notice.
-  - Verify: reproducible license audit command.
+  - Outcome: repository records allowed dependency licenses, confirms `nix-worker-protocol` source provenance, and validates notices for any separately approved future import.
+  - Red: audit reports unknown/disallowed package, untracked copied source, or missing notice.
+  - Verify: reproducible license and provenance audit command.
   - Evidence: report path and zero unresolved findings.
 
 - [ ] T266 Run dependency vulnerability audit
@@ -2194,6 +2194,7 @@ These items require separate design review before implementation and are not hid
 - Duplicate active request coalescing.
 - Group reservations, weighted shares, or cost research scheduler behavior.
 - Kubernetes, cloud batch, or dedicated worker-protocol backends.
+- Extracting `nix-worker-protocol` into a separate repository or published external dependency before its API survives another Nix/Lix target, contains no Telchar domain types, has independently runnable compatibility/property/fuzz suites, has a real second consumer, and has documented versioning, ownership, release, maintenance, and provenance processes.
 - Provider-specific machine provisioning or autoscaling.
 - Full client reattachment and log resumption after transport loss.
 - Interactive shell access.

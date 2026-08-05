@@ -125,9 +125,34 @@ Requester
 
 A credential ID is scoped by its authentication authority. An audit subject is the configured owner or CA-scoped certificate identity. A quota subject is an explicit configured mapping and falls back to credential ID. A bare source IP is audit context and emergency classification only.
 
-### Imported-code provenance
+### Worker-protocol crate and source policy
 
-No `rio-nix` source may be copied until its applicable license is resolved. The archived repository's root license and Rust package metadata appear inconsistent. Before import, Telchar must record an exact upstream revision, applicable license evidence, imported-file manifest, retained notices, local modification policy, and associated tests or fuzz targets. If the license cannot be established with sufficient confidence, Telchar must not import the code.
+The Nix worker protocol is implemented in a dedicated workspace crate named `nix-worker-protocol` (`nix_worker_protocol` in Rust source). The name describes the public protocol rather than Telchar, allowing other projects to use it without adopting Telchar terminology. `telchar-nix` is intentionally avoided because it is project-branded and too broad to communicate the crate's boundary.
+
+The crate owns only reusable Nix wire behavior:
+
+- Bounded wire primitives and framing.
+- Protocol versions and feature negotiation.
+- Worker operation codes and request/response types.
+- Structured activity, log, and error frames.
+- Nix build-result wire representations.
+- Protocol compatibility fixtures, property tests, and fuzz targets.
+
+It must not depend on Telchar identity, admission, scheduling, PostgreSQL state, gateway-store leases, SSH ingress, execution backends, cache policy, or service configuration. Telchar adapts the crate's protocol requests to domain-specific state and store operations.
+
+Initial implementation is independent: behavior is derived from captured stock-Nix traffic, primary Nix source and documentation, and real-client compatibility tests. Rio-build and `rio-nix` may inform architecture, terminology, edge-case inventories, and test categories, but their implementation must not be copied, translated, or mechanically adapted into the initial crate. This avoids uncertain licensing provenance, unused Rio abstractions, and accidental compatibility with Rio rather than current Nix.
+
+Any future proposal to import Rio source requires a separate ADR, exact upstream revision, applicable license evidence, imported-file manifest, retained notices, local modification policy, and tests proving the import is preferable to the existing implementation. Import is an exception, not the default path.
+
+The crate begins inside the Telchar repository so protocol and gateway changes can remain atomic while the API is unstable. Extraction to a separate repository and publication as an external dependency may be considered only after:
+
+- The API has survived the initial supported Nix version and at least one additional Nix or Lix target.
+- Its public API contains no Telchar domain types.
+- Compatibility, property, and fuzz suites can run independently.
+- A real second consumer exists or is ready to integrate.
+- Versioning, maintenance ownership, release process, and provenance are documented.
+
+Until those conditions hold, Telchar uses a workspace path dependency and does not consume the crate through a Git dependency.
 
 ## Goals
 
@@ -255,7 +280,7 @@ ForceCommand telchar serve-stdio
 
 From the client's perspective, Telchar behaves as a remote Nix store and builder. Internally, Telchar can queue and dispatch the requested build elsewhere.
 
-Worker-protocol compatibility is one of the highest-risk parts of the project. Telchar may selectively import `rio-nix` code only where compatibility tests justify it and licensing evidence establishes applicable terms with sufficient confidence. Any imported code will preserve required copyright, license, and source attribution and will be maintained inside the Telchar repository rather than consumed as a live dependency. If import is not permitted, Telchar will implement the required behavior from protocol evidence and primary references without copying upstream source. Individual pieces should be extended or replaced only when requirements or compatibility tests justify doing so; protocol framing, NAR streaming, version differences, and structured error handling must not be casually reimplemented from assumptions.
+Worker-protocol compatibility is one of the highest-risk parts of the project. The `nix-worker-protocol` crate implements required behavior independently from captured protocol evidence, primary Nix source and documentation, and real-client tests. Rio-build is reference material for architecture and test coverage only; its implementation is not copied or translated into the initial crate. Protocol framing, NAR streaming, version differences, and structured error handling must be implemented from evidence rather than assumptions.
 
 ## Core architectural principle
 
@@ -935,7 +960,7 @@ It is a good fit for:
 A likely async runtime is Tokio. Exact libraries should be selected after focused prototypes, especially for:
 
 - SSH server behavior.
-- Nix worker-protocol reuse.
+- Bounded worker-protocol I/O.
 - NAR parsing and streaming.
 - Nix store interaction.
 - Nomad API access.
@@ -943,30 +968,46 @@ A likely async runtime is Tokio. Exact libraries should be selected after focuse
 
 The project should avoid committing to a broad framework before proving the worker-protocol and store vertical slice.
 
-## Suggested internal modules
+## Workspace and internal modules
 
-Initial source organization could resemble:
+The repository begins as a Cargo workspace with a reusable protocol library and the Telchar service:
 
 ```text
-src/
-├── main.rs
-├── config.rs
-├── identity.rs
-├── protocol/
-├── store/
-├── admission/
-├── scheduler/
-├── execution/
-├── backend/
-│   ├── local.rs
-│   ├── ssh.rs
-│   └── nomad.rs
-├── cache/
-├── metrics.rs
-└── state.rs
+Cargo.toml
+crates/
+├── nix-worker-protocol/
+│   ├── Cargo.toml
+│   ├── src/
+│   │   ├── framing.rs
+│   │   ├── handshake.rs
+│   │   ├── operation.rs
+│   │   ├── message.rs
+│   │   ├── activity.rs
+│   │   ├── error.rs
+│   │   └── result.rs
+│   ├── tests/
+│   └── fuzz/
+└── telchar/
+    ├── Cargo.toml
+    └── src/
+        ├── main.rs
+        ├── config.rs
+        ├── identity.rs
+        ├── protocol_gateway.rs
+        ├── store/
+        ├── admission/
+        ├── scheduler/
+        ├── execution/
+        ├── backend/
+        │   ├── local.rs
+        │   ├── ssh.rs
+        │   └── nomad.rs
+        ├── cache/
+        ├── metrics.rs
+        └── state.rs
 ```
 
-This is a direction, not a required crate split. Begin as one crate unless compile boundaries or reuse justify a workspace.
+The exact module files may evolve with evidence. The crate boundary is required: `nix-worker-protocol` contains reusable wire concepts, while `telchar` contains service and domain behavior.
 
 ## Delivery phases
 
@@ -980,8 +1021,9 @@ Goal: prove the pinned stock Nix client can communicate with Telchar and establi
 - Capture the operation sequence used by real remote builds in relevant trust modes.
 - Complete Nix worker-protocol handshake over direct stdio.
 - Define required, optional, and deterministically rejected operations.
-- Resolve `rio-nix` licensing and record source provenance before importing any code.
-- Import only behavior justified by compatibility tests, preserving applicable attribution and useful tests or fuzz targets.
+- Establish the `nix-worker-protocol` workspace crate and its dependency boundary.
+- Implement protocol behavior independently from captured traffic, primary Nix references, and compatibility tests.
+- Record Rio source revision and licensing discrepancy for reference provenance; do not copy or translate Rio implementation in the initial crate.
 - Prove the same supported session over restricted OpenSSH `ssh-ng://` ingress.
 - Prove trusted identity handoff and negative SSH restrictions.
 
@@ -1138,7 +1180,9 @@ Rio-build is Kubernetes-native and includes a sophisticated DAG scheduler, chunk
 - Pluggable backends rather than a Kubernetes-only executor controller.
 - External infrastructure autoscaling.
 
-Rio-build is archived, so Telchar will not depend on it as an active upstream project. Its `rio-nix` crate is deliberately isolated from other `rio-*` crates and includes worker-protocol, ATerm, NAR, store-path, build-result, and structured-error parsing plus fuzz targets. The repository's root license and Rust package metadata appear inconsistent. Telchar may import useful code only after recording the source revision and resolving applicable license evidence, notices, and local maintenance requirements. Otherwise, rio-build remains architectural reference material only and required behavior will be implemented independently from protocol evidence and primary references.
+Rio-build is archived, so Telchar will not depend on it as an active upstream project. Its `rio-nix` crate is deliberately isolated from other `rio-*` crates and includes worker-protocol, ATerm, NAR, store-path, build-result, and structured-error parsing plus fuzz targets. The repository's root license and Rust package metadata appear inconsistent.
+
+The initial `nix-worker-protocol` implementation does not copy or translate Rio source. Rio remains architectural reference material for identifying concepts, edge cases, and useful categories of tests. Wire behavior is established independently from captured stock-Nix traffic, primary Nix source and documentation, and compatibility tests. A later source import would require a separate reviewed decision and resolved provenance; creation of a reusable crate is not permission to absorb Rio wholesale.
 
 ### Yensid
 
@@ -1175,7 +1219,7 @@ The following remain bounded research tasks. Each must produce recorded evidence
 
 1. Which exact worker operations and protocol versions are exercised by the flake-pinned Nix client in trusted, untrusted, classic input-addressed, and content-addressed cases?
 2. Can OpenSSH expose sufficient authenticated public-key and certificate metadata to the forced-command frontend without trusting client-controlled environment data?
-3. Which `rio-nix` files, if any, have licensing evidence sufficient for import, and which imported tests or fuzz targets establish their value?
+3. Which Rio architecture lessons and test categories should inform the independent `nix-worker-protocol` implementation without copying or translating source?
 4. Does the dedicated system-store topology satisfy protocol, privilege, fixture-reset, and GC-lease requirements, or is an alternate store root necessary?
 5. What request-scoped transfer and authorization protocol lets remote executors obtain exactly the required private closure and return only authorized outputs?
 6. What normalized result schema preserves every `BuildResult` field required by the initial compatibility matrix?
